@@ -1,8 +1,17 @@
-import { supabase } from '@/lib/supabaseClient';
+import { createSupabaseServerClient } from '@/lib/supabase/server'; // Endret import
 import { NextRequest, NextResponse } from 'next/server';
 
 // GET /api/admin/outlets - Hent alle utsalgssteder
 export async function GET(request: NextRequest) {
+  const supabase = createSupabaseServerClient(); // Bruker ny server-klient
+  const { data: { user }, error: authError } = await supabase.auth.getUser();
+
+  if (authError || !user) {
+    console.error('Authentication error or no user:', authError);
+    return NextResponse.json({ error: 'Unauthorized: Valid session required.' }, { status: 401 });
+  }
+
+  // Bruker er autentisert, fortsett
   try {
     const { data, error } = await supabase
       .from('outlets')
@@ -22,6 +31,15 @@ export async function GET(request: NextRequest) {
 
 // POST /api/admin/outlets - Opprett et nytt utsalgssted
 export async function POST(request: NextRequest) {
+  const supabase = createSupabaseServerClient(); // Bruker ny server-klient
+  const { data: { user }, error: authError } = await supabase.auth.getUser();
+
+  if (authError || !user) {
+    console.error('Authentication error or no user:', authError);
+    return NextResponse.json({ error: 'Unauthorized: Valid session required to create outlet.' }, { status: 401 });
+  }
+
+  // Bruker er autentisert, fortsett
   try {
     const outletData = await request.json();
 
@@ -37,7 +55,9 @@ export async function POST(request: NextRequest) {
           address: outletData.address,
           latitude: outletData.latitude,
           longitude: outletData.longitude,
-          is_active: outletData.is_active,
+          is_active: outletData.is_active === undefined ? true : outletData.is_active, // Default is_active to true
+          // Optional: Legg til user_id hvis du vil spore hvem som opprettet utsalgsstedet
+          // user_id: user.id,
         },
       ])
       .select()
@@ -57,4 +77,4 @@ export async function POST(request: NextRequest) {
   }
 }
 
-// TODO: Add authentication and authorization to secure these endpoints.
+// TODO: Add authentication and authorization to secure these endpoints. // Denne kan fjernes/oppdateres
