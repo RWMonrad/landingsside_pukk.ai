@@ -1,17 +1,14 @@
-import { createSupabaseServerClient } from '@/lib/supabase/server'; // Endret import
+// app/api/admin/outlets/route.ts
 import { NextRequest, NextResponse } from 'next/server';
+import { createSupabaseServerClient } from '@/lib/supabase/server';
+import { adminOnly } from '@/lib/auth/adminOnly'; // Ny import
+import { User } from '@supabase/supabase-js'; // Importer User type
 
-// GET /api/admin/outlets - Hent alle utsalgssteder
-export async function GET(request: NextRequest) {
-  const supabase = createSupabaseServerClient(); // Bruker ny server-klient
-  const { data: { user }, error: authError } = await supabase.auth.getUser();
+// Separat handler-funksjon for GET
+async function getOutletsHandler(request: NextRequest, context: {}, user: User) {
+  const supabase = createSupabaseServerClient();
+  // Autentisering og rolle-sjekk er allerede gjort av adminOnly
 
-  if (authError || !user) {
-    console.error('Authentication error or no user:', authError);
-    return NextResponse.json({ error: 'Unauthorized: Valid session required.' }, { status: 401 });
-  }
-
-  // Bruker er autentisert, fortsett
   try {
     const { data, error } = await supabase
       .from('outlets')
@@ -29,37 +26,44 @@ export async function GET(request: NextRequest) {
   }
 }
 
-// POST /api/admin/outlets - Opprett et nytt utsalgssted
-export async function POST(request: NextRequest) {
-  const supabase = createSupabaseServerClient(); // Bruker ny server-klient
-  const { data: { user }, error: authError } = await supabase.auth.getUser();
+// Separat handler-funksjon for POST
+async function createOutletHandler(request: NextRequest, context: {}, user: User) {
+  const supabase = createSupabaseServerClient();
+  // Autentisering og rolle-sjekk er allerede gjort av adminOnly
 
-  if (authError || !user) {
-    console.error('Authentication error or no user:', authError);
-    return NextResponse.json({ error: 'Unauthorized: Valid session required to create outlet.' }, { status: 401 });
-  }
-
-  // Bruker er autentisert, fortsett
   try {
     const outletData = await request.json();
 
-    if (!outletData.name) {
-      return NextResponse.json({ error: 'Name is required for an outlet.' }, { status: 400 });
+    // Validering
+    if (!outletData.name || typeof outletData.name !== 'string' || outletData.name.trim() === '') {
+      return NextResponse.json({ error: 'Name is required and must be a non-empty string.' }, { status: 400 });
     }
+    if (outletData.address && typeof outletData.address !== 'string') {
+      return NextResponse.json({ error: 'Address must be a string if provided.' }, { status: 400 });
+    }
+    if (outletData.latitude !== undefined && typeof outletData.latitude !== 'number') {
+      return NextResponse.json({ error: 'Latitude must be a number if provided.' }, { status: 400 });
+    }
+    if (outletData.longitude !== undefined && typeof outletData.longitude !== 'number') {
+      return NextResponse.json({ error: 'Longitude must be a number if provided.' }, { status: 400 });
+    }
+    if (outletData.is_active !== undefined && typeof outletData.is_active !== 'boolean') {
+      return NextResponse.json({ error: 'is_active must be a boolean if provided.' }, { status: 400 });
+    }
+
+    const insertData: any = {
+      name: outletData.name.trim(),
+      address: outletData.address ? outletData.address.trim() : null,
+      latitude: outletData.latitude,
+      longitude: outletData.longitude,
+      is_active: outletData.is_active === undefined ? true : outletData.is_active,
+      // Optional: Legg til user.id for å spore hvem som opprettet utsalgsstedet
+      // created_by: user.id,
+    };
 
     const { data, error } = await supabase
       .from('outlets')
-      .insert([
-        {
-          name: outletData.name,
-          address: outletData.address,
-          latitude: outletData.latitude,
-          longitude: outletData.longitude,
-          is_active: outletData.is_active === undefined ? true : outletData.is_active, // Default is_active to true
-          // Optional: Legg til user_id hvis du vil spore hvem som opprettet utsalgsstedet
-          // user_id: user.id,
-        },
-      ])
+      .insert([insertData])
       .select()
       .single();
 
@@ -77,4 +81,6 @@ export async function POST(request: NextRequest) {
   }
 }
 
-// TODO: Add authentication and authorization to secure these endpoints. // Denne kan fjernes/oppdateres
+// Eksporter de innpakkede handlerne
+export const GET = adminOnly(getOutletsHandler);
+export const POST = adminOnly(createOutletHandler);
