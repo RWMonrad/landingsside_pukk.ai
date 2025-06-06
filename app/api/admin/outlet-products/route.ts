@@ -1,15 +1,29 @@
-import { supabase } from '@/lib/supabaseClient';
+import { createSupabaseServerClient } from '@/lib/supabase/server'; // Endret import
 import { NextRequest, NextResponse } from 'next/server';
 
 // GET /api/admin/outlet-products - Hent alle produkt-utsalgssted koblinger
 export async function GET(request: NextRequest) {
+  const supabase = createSupabaseServerClient(); // Bruker ny server-klient
+  const { data: { user }, error: authError } = await supabase.auth.getUser();
+
+  if (authError || !user) {
+    console.error('Authentication error or no user:', authError);
+    return NextResponse.json({ error: 'Unauthorized: Valid session required.' }, { status: 401 });
+  }
+
+  // Bruker er autentisert, fortsett
   try {
-    // For å gjøre dette mer nyttig, kan vi joine med products og outlets tabellene
-    // For nå henter vi bare rådata fra outlet_products
     const { data, error } = await supabase
       .from('outlet_products')
       .select(`
-        *,
+        id, 
+        outlet_id,
+        product_id,
+        price,
+        stock_status,
+        is_available,
+        created_at,
+        updated_at,
         products (name, unit),
         outlets (name)
       `)
@@ -28,6 +42,15 @@ export async function GET(request: NextRequest) {
 
 // POST /api/admin/outlet-products - Opprett en ny produkt-utsalgssted kobling
 export async function POST(request: NextRequest) {
+  const supabase = createSupabaseServerClient(); // Bruker ny server-klient
+  const { data: { user }, error: authError } = await supabase.auth.getUser();
+
+  if (authError || !user) {
+    console.error('Authentication error or no user:', authError);
+    return NextResponse.json({ error: 'Unauthorized: Valid session required to create outlet-product relation.' }, { status: 401 });
+  }
+
+  // Bruker er autentisert, fortsett
   try {
     const relationData = await request.json();
 
@@ -35,7 +58,7 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: 'Outlet ID, Product ID, and Price are required.' }, { status: 400 });
     }
     if (typeof relationData.price !== 'number' || relationData.price < 0) {
-        return NextResponse.json({ error: 'Price must be a non-negative number.' }, { status: 400 });
+      return NextResponse.json({ error: 'Price must be a non-negative number.' }, { status: 400 });
     }
 
     const { data, error } = await supabase
@@ -46,11 +69,20 @@ export async function POST(request: NextRequest) {
           product_id: relationData.product_id,
           price: relationData.price,
           stock_status: relationData.stock_status, // Defaults to 'in_stock' in DB if not provided
-          is_available: relationData.is_available, // Defaults to true in DB if not provided
+          is_available: relationData.is_available === undefined ? true : relationData.is_available, // Defaults to true in DB if not provided
+           // Optional: Legg til user_id hvis du vil spore hvem som opprettet dette
+          // user_id: user.id,
         },
       ])
       .select(`
-        *,
+        id,
+        outlet_id,
+        product_id,
+        price,
+        stock_status,
+        is_available,
+        created_at,
+        updated_at,
         products (name, unit),
         outlets (name)
       `)
@@ -58,7 +90,6 @@ export async function POST(request: NextRequest) {
 
     if (error) {
       console.error('Error creating outlet-product relation:', error);
-      // Handle potential unique constraint violation (outlet_id, product_id already exists)
       if (error.code === '23505') { // Unique violation
         return NextResponse.json({ error: 'This product is already associated with this outlet. Update the existing entry instead.' }, { status: 409 });
       }
@@ -74,4 +105,4 @@ export async function POST(request: NextRequest) {
   }
 }
 
-// TODO: Add authentication and authorization to secure these endpoints.
+// TODO: Add authentication and authorization to secure these endpoints. // Denne kan fjernes/oppdateres
