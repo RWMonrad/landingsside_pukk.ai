@@ -1,4 +1,4 @@
-import { supabase } from '@/lib/supabaseClient';
+import { createSupabaseServerClient } from '@/lib/supabase/server'; // Endret import
 import { NextRequest, NextResponse } from 'next/server';
 
 interface RouteParams {
@@ -10,6 +10,15 @@ export async function GET(
   request: NextRequest,
   { params }: { params: RouteParams }
 ) {
+  const supabase = createSupabaseServerClient(); // Bruker ny server-klient
+  const { data: { user }, error: authError } = await supabase.auth.getUser();
+
+  if (authError || !user) {
+    console.error('Authentication error or no user:', authError);
+    return NextResponse.json({ error: 'Unauthorized: Valid session required.' }, { status: 401 });
+  }
+
+  // Bruker er autentisert, fortsett
   const { id } = params;
   if (!id) {
     return NextResponse.json({ error: 'Outlet-product relation ID is required.' }, { status: 400 });
@@ -19,7 +28,14 @@ export async function GET(
     const { data, error } = await supabase
       .from('outlet_products')
       .select(`
-        *,
+        id,
+        outlet_id,
+        product_id,
+        price,
+        stock_status,
+        is_available,
+        created_at,
+        updated_at,
         products (name, unit),
         outlets (name)
       `)
@@ -33,7 +49,7 @@ export async function GET(
       console.error('Error fetching outlet-product relation:', error);
       return NextResponse.json({ error: error.message }, { status: 500 });
     }
-    if (!data) {
+    if (!data) { // Selv om PGRST116 skulle fange dette, for ekstra sikkerhet
         return NextResponse.json({ error: 'Outlet-product relation not found.' }, { status: 404 });
     }
     return NextResponse.json(data);
@@ -43,11 +59,20 @@ export async function GET(
   }
 }
 
-// PUT /api/admin/outlet-products/[id] - Oppdater en kobling (f.eks. pris, lagerstatus)
+// PUT /api/admin/outlet-products/[id] - Oppdater en kobling
 export async function PUT(
   request: NextRequest,
   { params }: { params: RouteParams }
 ) {
+  const supabase = createSupabaseServerClient(); // Bruker ny server-klient
+  const { data: { user }, error: authError } = await supabase.auth.getUser();
+
+  if (authError || !user) {
+    console.error('Authentication error or no user:', authError);
+    return NextResponse.json({ error: 'Unauthorized: Valid session required to update relation.' }, { status: 401 });
+  }
+
+  // Bruker er autentisert, fortsett
   const { id } = params;
   if (!id) {
     return NextResponse.json({ error: 'Outlet-product relation ID is required.' }, { status: 400 });
@@ -56,46 +81,59 @@ export async function PUT(
   try {
     const updateData = await request.json();
 
-    // outlet_id and product_id should generally not be updated on an existing relation.
-    // If they need to change, it's often better to delete and create a new one.
-    // We'll allow updating price, stock_status, is_available.
-    const allowedUpdates: { price?: number; stock_status?: string; is_available?: boolean } = {};
-    if (typeof updateData.price !== 'undefined') {
-        if (typeof updateData.price !== 'number' || updateData.price < 0) {
-            return NextResponse.json({ error: 'Price must be a non-negative number.' }, { status: 400 });
-        }
-        allowedUpdates.price = updateData.price;
+    // Validering av input
+    if (Object.keys(updateData).length === 0) {
+        return NextResponse.json({ error: 'Request body cannot be empty for update.' }, { status: 400 });
     }
-    if (typeof updateData.stock_status !== 'undefined') {
-        allowedUpdates.stock_status = updateData.stock_status;
+    if (updateData.price !== undefined && (typeof updateData.price !== 'number' || updateData.price < 0)) {
+      return NextResponse.json({ error: 'Price must be a non-negative number if provided.' }, { status: 400 });
     }
-    if (typeof updateData.is_available !== 'undefined') {
-        allowedUpdates.is_available = updateData.is_available;
+    if (updateData.outlet_id !== undefined || updateData.product_id !== undefined) {
+        return NextResponse.json({ error: 'Cannot change outlet_id or product_id. Delete and create a new relation instead.' }, { status: 400 });
     }
 
-    if (Object.keys(allowedUpdates).length === 0) {
+    const updatePayload: { [key: string]: any } = {};
+    if (updateData.price !== undefined) updatePayload.price = updateData.price;
+    if (updateData.stock_status !== undefined) updatePayload.stock_status = updateData.stock_status;
+    if (updateData.is_available !== undefined) updatePayload.is_available = updateData.is_available;
+    
+    // Optional: Legg til updated_at og user_id for sporing
+    // if (Object.keys(updatePayload).length > 0) { // Bare sett hvis det er faktiske endringer
+    //   updatePayload.updated_at = new Date().toISOString();
+    //   // updatePayload.updated_by = user.id; 
+    // }
+
+
+    if (Object.keys(updatePayload).length === 0) {
         return NextResponse.json({ error: 'No valid fields provided for update.' }, { status: 400 });
     }
-
+    
     const { data, error } = await supabase
       .from('outlet_products')
-      .update(allowedUpdates)
+      .update(updatePayload)
       .eq('id', id)
       .select(`
-        *,
+        id,
+        outlet_id,
+        product_id,
+        price,
+        stock_status,
+        is_available,
+        created_at,
+        updated_at,
         products (name, unit),
         outlets (name)
       `)
       .single();
 
     if (error) {
-      if (error.code === 'PGRST116') {
+      console.error('Error updating outlet-product relation:', error);
+      if (error.code === 'PGRST116') { // .single() fant ikke raden
         return NextResponse.json({ error: 'Outlet-product relation not found to update.' }, { status: 404 });
       }
-      console.error('Error updating outlet-product relation:', error);
       return NextResponse.json({ error: error.message }, { status: 500 });
     }
-     if (!data) {
+    if (!data) { // Burde ikke skje hvis .single() og ingen feil, men for sikkerhets skyld
         return NextResponse.json({ error: 'Outlet-product relation not found to update.' }, { status: 404 });
     }
     return NextResponse.json(data);
@@ -103,6 +141,10 @@ export async function PUT(
     console.error('Unexpected error updating outlet-product relation:', err);
     if (err instanceof SyntaxError && err.message.includes('JSON')) {
         return NextResponse.json({ error: 'Invalid JSON in request body.' }, { status: 400 });
+    }
+    // Dobbeltsjekk for PGRST116 i tilfelle det ikke ble fanget over
+    if (err.code === 'PGRST116') { 
+        return NextResponse.json({ error: 'Outlet-product relation not found to update.' }, { status: 404 });
     }
     return NextResponse.json({ error: 'An unexpected error occurred.' }, { status: 500 });
   }
@@ -113,6 +155,15 @@ export async function DELETE(
   request: NextRequest,
   { params }: { params: RouteParams }
 ) {
+  const supabase = createSupabaseServerClient(); // Bruker ny server-klient
+  const { data: { user }, error: authError } = await supabase.auth.getUser();
+
+  if (authError || !user) {
+    console.error('Authentication error or no user:', authError);
+    return NextResponse.json({ error: 'Unauthorized: Valid session required to delete relation.' }, { status: 401 });
+  }
+
+  // Bruker er autentisert, fortsett
   const { id } = params;
   if (!id) {
     return NextResponse.json({ error: 'Outlet-product relation ID is required.' }, { status: 400 });
@@ -137,5 +188,3 @@ export async function DELETE(
     return NextResponse.json({ error: 'An unexpected error occurred.' }, { status: 500 });
   }
 }
-
-// TODO: Add authentication and authorization to secure these endpoints.
