@@ -1,17 +1,14 @@
-import { createSupabaseServerClient } from '@/lib/supabase/server'; // Endret import
+// app/api/admin/products/route.ts
 import { NextRequest, NextResponse } from 'next/server';
+import { createSupabaseServerClient } from '@/lib/supabase/server';
+import { adminOnly } from '@/lib/auth/adminOnly'; // Ny import
+import { User } from '@supabase/supabase-js'; // Importer User type for typehinting
 
-// GET /api/admin/products - Hent alle produkter
-export async function GET(request: NextRequest) {
-  const supabase = createSupabaseServerClient(); // Bruker ny server-klient
-  const { data: { user }, error: authError } = await supabase.auth.getUser();
+// Separat handler-funksjon for GET
+async function getProductsHandler(request: NextRequest, context: {}, user: User) {
+  const supabase = createSupabaseServerClient();
+  // Autentisering og rolle-sjekk er allerede gjort av adminOnly
 
-  if (authError || !user) {
-    console.error('Authentication error or no user:', authError);
-    return NextResponse.json({ error: 'Unauthorized: Valid session required.' }, { status: 401 });
-  }
-
-  // Bruker er autentisert, fortsett med å hente produkter
   try {
     const { data, error } = await supabase
       .from('products')
@@ -29,37 +26,54 @@ export async function GET(request: NextRequest) {
   }
 }
 
-// POST /api/admin/products - Opprett et nytt produkt
-export async function POST(request: NextRequest) {
-  const supabase = createSupabaseServerClient(); // Bruker ny server-klient
-  const { data: { user }, error: authError } = await supabase.auth.getUser();
+// Separat handler-funksjon for POST
+async function createProductHandler(request: NextRequest, context: {}, user: User) {
+  const supabase = createSupabaseServerClient();
+  // Autentisering og rolle-sjekk er allerede gjort av adminOnly
 
-  if (authError || !user) {
-    console.error('Authentication error or no user:', authError);
-    return NextResponse.json({ error: 'Unauthorized: Valid session required to create product.' }, { status: 401 });
-  }
-
-  // Bruker er autentisert, fortsett med å opprette produkt
   try {
     const productData = await request.json();
 
-    if (!productData.name || !productData.unit) {
-      return NextResponse.json({ error: 'Name and unit are required.' }, { status: 400 });
+    // Validering
+    if (!productData.name || typeof productData.price === 'undefined' || !productData.unit) {
+      return NextResponse.json({ error: 'Name, price, and unit are required.' }, { status: 400 });
     }
+    if (typeof productData.price !== 'number' || productData.price < 0) {
+      return NextResponse.json({ error: 'Price must be a non-negative number.' }, { status: 400 });
+    }
+    if (typeof productData.name !== 'string' || productData.name.trim() === '') {
+        return NextResponse.json({ error: 'Name must be a non-empty string.' }, { status: 400 });
+    }
+    if (typeof productData.unit !== 'string' || productData.unit.trim() === '') {
+        return NextResponse.json({ error: 'Unit must be a non-empty string.' }, { status: 400 });
+    }
+    if (productData.description && typeof productData.description !== 'string') {
+        return NextResponse.json({ error: 'Description must be a string if provided.' }, { status: 400 });
+    }
+    // Valider category hvis den er gitt
+    if (productData.category && typeof productData.category !== 'string') {
+        return NextResponse.json({ error: 'Category must be a string if provided.' }, { status: 400 });
+    }
+    // Valider image_url hvis den er gitt
+    if (productData.image_url && typeof productData.image_url !== 'string') {
+        return NextResponse.json({ error: 'Image URL must be a string if provided.' }, { status: 400 });
+    }
+
+
+    const insertData: any = {
+      name: productData.name,
+      description: productData.description,
+      price: productData.price, // Sørg for at 'price' er i databasen din for 'products'
+      unit: productData.unit,
+      category: productData.category,
+      image_url: productData.image_url,
+      // Optional: Legg til user.id for å spore hvem som opprettet produktet
+      // created_by: user.id,
+    };
 
     const { data, error } = await supabase
       .from('products')
-      .insert([
-        {
-          name: productData.name,
-          description: productData.description,
-          category: productData.category,
-          image_url: productData.image_url,
-          unit: productData.unit,
-          // Optional: Legg til user_id hvis du vil spore hvem som opprettet produktet
-          // user_id: user.id, 
-        },
-      ])
+      .insert([insertData])
       .select()
       .single();
 
@@ -77,4 +91,6 @@ export async function POST(request: NextRequest) {
   }
 }
 
-// TODO: Add authentication and authorization to secure these endpoints. // Denne kan fjernes/oppdateres
+// Eksporter de innpakkede handlerne
+export const GET = adminOnly(getProductsHandler);
+export const POST = adminOnly(createProductHandler);
