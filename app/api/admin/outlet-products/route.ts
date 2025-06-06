@@ -1,22 +1,19 @@
-import { createSupabaseServerClient } from '@/lib/supabase/server'; // Endret import
+// app/api/admin/outlet-products/route.ts
 import { NextRequest, NextResponse } from 'next/server';
+import { createSupabaseServerClient } from '@/lib/supabase/server';
+import { adminOnly } from '@/lib/auth/adminOnly'; // Ny import
+import { User } from '@supabase/supabase-js'; // Importer User type
 
-// GET /api/admin/outlet-products - Hent alle produkt-utsalgssted koblinger
-export async function GET(request: NextRequest) {
-  const supabase = createSupabaseServerClient(); // Bruker ny server-klient
-  const { data: { user }, error: authError } = await supabase.auth.getUser();
+// Separat handler-funksjon for GET
+async function getOutletProductsHandler(request: NextRequest, context: {}, user: User) {
+  const supabase = createSupabaseServerClient();
+  // Autentisering og rolle-sjekk er allerede gjort av adminOnly
 
-  if (authError || !user) {
-    console.error('Authentication error or no user:', authError);
-    return NextResponse.json({ error: 'Unauthorized: Valid session required.' }, { status: 401 });
-  }
-
-  // Bruker er autentisert, fortsett
   try {
     const { data, error } = await supabase
       .from('outlet_products')
       .select(`
-        id, 
+        id,
         outlet_id,
         product_id,
         price,
@@ -40,40 +37,50 @@ export async function GET(request: NextRequest) {
   }
 }
 
-// POST /api/admin/outlet-products - Opprett en ny produkt-utsalgssted kobling
-export async function POST(request: NextRequest) {
-  const supabase = createSupabaseServerClient(); // Bruker ny server-klient
-  const { data: { user }, error: authError } = await supabase.auth.getUser();
+// Separat handler-funksjon for POST
+async function createOutletProductHandler(request: NextRequest, context: {}, user: User) {
+  const supabase = createSupabaseServerClient();
+  // Autentisering og rolle-sjekk er allerede gjort av adminOnly
 
-  if (authError || !user) {
-    console.error('Authentication error or no user:', authError);
-    return NextResponse.json({ error: 'Unauthorized: Valid session required to create outlet-product relation.' }, { status: 401 });
-  }
-
-  // Bruker er autentisert, fortsett
   try {
     const relationData = await request.json();
 
-    if (!relationData.outlet_id || !relationData.product_id || typeof relationData.price === 'undefined') {
-      return NextResponse.json({ error: 'Outlet ID, Product ID, and Price are required.' }, { status: 400 });
+    // Validering
+    if (!relationData.outlet_id || !relationData.product_id) {
+      return NextResponse.json({ error: 'Outlet ID and Product ID are required.' }, { status: 400 });
     }
-    if (typeof relationData.price !== 'number' || relationData.price < 0) {
-      return NextResponse.json({ error: 'Price must be a non-negative number.' }, { status: 400 });
+    if (typeof relationData.outlet_id !== 'string' || relationData.outlet_id.trim() === '') {
+        return NextResponse.json({ error: 'Outlet ID must be a non-empty string.' }, { status: 400 });
     }
+    if (typeof relationData.product_id !== 'string' || relationData.product_id.trim() === '') {
+        return NextResponse.json({ error: 'Product ID must be a non-empty string.' }, { status: 400 });
+    }
+    if (relationData.price !== undefined && (typeof relationData.price !== 'number' || relationData.price < 0)) {
+      return NextResponse.json({ error: 'Price must be a non-negative number if provided.' }, { status: 400 });
+    }
+    // Antar at stock_status er en enum i databasen, f.eks. ('in_stock', 'low_stock', 'out_of_stock')
+    // Hvis den er valgfri og har en default i DB, trenger vi kanskje ikke validere den her,
+    // med mindre vi vil sikre at kun gyldige verdier sendes.
+    if (relationData.stock_status && typeof relationData.stock_status !== 'string') {
+        return NextResponse.json({ error: 'Stock status must be a string if provided.' }, { status: 400 });
+    }
+    if (relationData.is_available !== undefined && typeof relationData.is_available !== 'boolean') {
+      return NextResponse.json({ error: 'is_available must be a boolean if provided.' }, { status: 400 });
+    }
+
+    const insertData: any = {
+      outlet_id: relationData.outlet_id,
+      product_id: relationData.product_id,
+      price: relationData.price, // Kan være null hvis databasen tillater det
+      stock_status: relationData.stock_status, // Kan være null/default
+      is_available: relationData.is_available === undefined ? true : relationData.is_available,
+      // Optional: Legg til user.id for å spore hvem som opprettet dette
+      // created_by: user.id,
+    };
 
     const { data, error } = await supabase
       .from('outlet_products')
-      .insert([
-        {
-          outlet_id: relationData.outlet_id,
-          product_id: relationData.product_id,
-          price: relationData.price,
-          stock_status: relationData.stock_status, // Defaults to 'in_stock' in DB if not provided
-          is_available: relationData.is_available === undefined ? true : relationData.is_available, // Defaults to true in DB if not provided
-           // Optional: Legg til user_id hvis du vil spore hvem som opprettet dette
-          // user_id: user.id,
-        },
-      ])
+      .insert([insertData])
       .select(`
         id,
         outlet_id,
@@ -90,8 +97,17 @@ export async function POST(request: NextRequest) {
 
     if (error) {
       console.error('Error creating outlet-product relation:', error);
-      if (error.code === '23505') { // Unique violation
+      if (error.code === '23505') { // Unique violation (forutsetter unique constraint på outlet_id, product_id)
         return NextResponse.json({ error: 'This product is already associated with this outlet. Update the existing entry instead.' }, { status: 409 });
+      }
+      // Sjekk for foreign key violations (hvis outlet_id eller product_id ikke finnes)
+      if (error.code === '23503') {
+        if (error.message.includes('outlet_products_outlet_id_fkey')) {
+            return NextResponse.json({ error: 'Outlet not found.' }, { status: 404 });
+        }
+        if (error.message.includes('outlet_products_product_id_fkey')) {
+            return NextResponse.json({ error: 'Product not found.' }, { status: 404 });
+        }
       }
       return NextResponse.json({ error: error.message }, { status: 500 });
     }
@@ -105,4 +121,6 @@ export async function POST(request: NextRequest) {
   }
 }
 
-// TODO: Add authentication and authorization to secure these endpoints. // Denne kan fjernes/oppdateres
+// Eksporter de innpakkede handlerne
+export const GET = adminOnly(getOutletProductsHandler);
+export const POST = adminOnly(createOutletProductHandler);
